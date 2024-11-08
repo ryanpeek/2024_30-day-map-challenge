@@ -6,4 +6,4 @@ A sporadic crack at the 2024 https://30daymapchallenge.com/
 
 Where in the CA have American bullfrogs been observed in the last ~10 years.
 
-![](figs/day01-points_bullfrogs.png)
+![](figs/day-01-points_bullfrogs.png)
