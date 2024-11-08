@@ -1,0 +1,278 @@
+---
+title: '2024 30-day Map Challenge • Day 01 • Points'
+author: 'Ryan Peek'
+date: "`r Sys.Date()`"
+format: 
+  html:
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    toc-title: Contents
+    code-overflow: wrap
+    code-fold: true
+    code-tools: true
+    code-block-bg: true
+    code-block-border-left: "#31BAE9"
+    theme: journal #litera #default
+    highlight-style: arrow
+    embed-resources: true
+editor_options: 
+  chunk_output_type: console
+---
+
+Look at an invasive species in California, known to consume everything and carry diseases, the American Bullfrog.
+
+# Getting Boundaries
+
+First we want to create a spatial object as a boundary box for use in searching iNaturalist. Let's grab a boundary to search within CA.
+
+```{r setup}
+#| echo: false
+#| hide: true
+#| warning: false
+#| message: false
+#| results: false
+
+# now load libraries
+library(tidyverse)
+library(glue)
+library(here)
+library(fs)
+library(sf)
+library(patchwork)
+library(tigris)
+options(tigris_use_cache = TRUE)
+library(mapview)
+mapviewOptions(fgb=FALSE)
+
+```
+
+## A Starting Boundary: States & Counties
+
+First we want to get a CA boundary, in an {`sf`} format. Depending on the need, we may want to choose a different boundary layer. For our purposes, the broadest boundary (the {`tigris`} layer) has the best outline on the land side and a buffered ocean side. 
+
+```{r caMap}
+#| echo: true
+#| code-fold: true
+#| message: false
+#| warning: false
+
+ca1 <- tigris::states(progress_bar=FALSE) |>  filter(NAME=="California")
+
+```
+
+Let's also grab county boundaries for use in summarizing data later. 
+
+```{r counties}
+#| eval: true
+#| echo: false
+#| message: false
+#| warning: false
+#| column: margin
+#| fig-cap: "CA map"
+
+ca_cntys <- tigris::counties("CA", progress_bar=FALSE)
+
+# set as the boundary
+plot(ca_cntys$geometry, border="gray")
+plot(ca1$geometry, border="gray10", lwd=2, add=TRUE)
+
+```
+
+
+# Getting iNaturalist Data
+
+Next we want to download some species data for a given species, as observed by folks via [**iNaturalist**](https://www.inaturalist.org/). Thankfully there's a great API package that allows us to easily import this data directly into R, the {[`rinat`](https://docs.ropensci.org/rinat/)} package.
+
+```{r rinat}
+#| echo: true
+#| eval: false
+#| message: false
+#| warning: false
+
+library(rinat)
+
+lica <- get_inat_obs(query="Bullfrog",quality = "research", bounds = ca1, geo = TRUE, maxresults = 9999)
+
+```
+
+Then we can filter and convert to {sf} format. We need to drop any missing X/Y points first, and join data to counties.
+
+```{r convertSF}
+#| echo: true
+#| eval: false
+
+
+lica_sf <- lica |> 
+  filter(!is.na(latitude)) |> 
+  st_as_sf(coords=c("longitude", "latitude"), remove=FALSE, crs=4269)
+
+# save out for later
+fs::dir_create("data_raw")
+write_rds(lica_sf, 
+          file=here::here(glue("data_raw/bullfrog_inat_ca_{format(Sys.Date(),'%Y%m%d')}.rds")))
+
+```
+
+## Plot by Year or County
+
+Here we can plot the data by year observed and county. More data has been reported over recent years, so trends may not necessarily correlate with range expansion, rather addition of records.
+
+
+```{r inatPlot2}
+#| echo: true
+#| eval: true
+#| error: false
+#| column: page
+#| out-width: 120%
+#| warning: false
+#| message: false
+
+# trim to just CA
+lica_sf <- read_rds("data_raw/bullfrog_inat_ca_20241107.rds")
+lica_ca <- lica_sf[ca1,]
+
+# plot
+ggplot() +
+  geom_sf(data=lica_ca, alpha=0.5, col="green4", cex=0.9) +
+  geom_sf(data=ca1, fill=NA) +
+    theme_minimal(base_family = "Roboto Condensed") +
+  labs(title="Bullfrog observations from iNat") +
+  theme(axis.text = element_text(family="Atkinson Hyperlegible")) + 
+  theme(axis.text.x = element_text(size=4, angle = 60),
+        axis.text.y = element_text(size=4))
+
+#ggsave(filename = here(glue("figs/bullfrogs_facet_by_yr_inat_{date_retrieved}.png")), dpi=300, 
+#       width = 11, height = 8.5, units = "in", bg="white")
+
+```
+
+
+By county, the number of records reported is linked with higher population densities, so Los Angeles, San Diego and the Bay Area all have very high observations by county.
+
+
+::: {.column-page-inset}
+
+```{r summarizeCnty}
+#| eval: true
+#| echo: true
+#| message: false
+#| warning: false
+#| fig-align: center
+#| out-height: 140%
+
+# get table of records by County
+lica_by_cnty <- lica_ca |> st_join(ca_cntys) |> st_drop_geometry() |>
+  filter(!is.na(NAME)) |>
+  group_by(NAME) |> tally(sort = TRUE, name = "n_per_cnty") |> 
+  slice_max(order_by = n_per_cnty, n = 20)
+
+# Plot Bullfrogs by County ------------------------------------------------
+
+ggplot() + 
+  geom_pointrange(data=lica_by_cnty,
+                  aes(y=forcats::fct_reorder(NAME, n_per_cnty),
+                      x=n_per_cnty, xmin=0, xmax=n_per_cnty),
+                  fill="green4", color="gray80", pch=21, 
+                  alpha=0.5, linewidth=0.2, size=0.7) +
+  hrbrthemes::theme_ft_rc(base_size = 12, axis_text_size = 6)+
+  labs(x="County", y="",
+       subtitle = "Top 20 Counties with iNat bullfrog records",
+       caption = glue("iNaturalist {{rinat}}: pulled 2024-Nov"))
+
+```
+
+
+# Hotpot Analysis Through Time
+
+One approach we can use is to look at what patterns may exist across different time periods, or before or after events. In this case, let's compare between before 2020, and after 2020 to get a sense of how recent drought years may have influenced observations and patterns of invasive spread of bullfrogs.
+
+## CA Wide
+
+```{r hotspot1}
+#| eval: true
+#| echo: true
+#| message: false
+#| warning: false
+
+library(sfhotspot)
+library(MetBrewer)
+library(ggtext)
+
+
+lica_ca_hist <- lica_ca |> st_join(ca_cntys) |> 
+  filter(year(ymd(observed_on)) >= 2013, year(ymd(observed_on)) <2023) |> 
+   group_by(NAME) |> add_tally(name="n_per_cnty")
+
+lica_ca_rcnt <- lica_ca |> st_join(ca_cntys) |>
+  filter(year(ymd(observed_on)) >= 2023) |> 
+  group_by(NAME) |> add_tally(name="n_per_cnty")
+
+hotspots_hist <- sfhotspot::hotspot_gistar(lica_ca_hist, cell_size = 0.2, grid_type = "hex", kde = FALSE)
+hotspots_hist_w <- sfhotspot::hotspot_gistar(lica_ca_hist, cell_size = 0.2, grid_type = "hex", weights = n_per_cnty, kde = FALSE)
+hotspots_rcnt <- sfhotspot::hotspot_gistar(lica_ca_rcnt, cell_size = 0.2, grid_type = "hex", kde = FALSE)
+hotspots_rcnt_w <- sfhotspot::hotspot_gistar(lica_ca_rcnt, cell_size = 0.2, grid_type = "hex", weights = n_per_cnty, kde = FALSE)
+
+
+# plot 2013-2023
+gg_hotspot_hist <- 
+  ggplot(hotspots_hist |> filter(gistar > 0))+ # pvalue < 0.05)) +
+  geom_sf(data = ca1, fill = "#E5E6E8", color = "#868D94") +
+  geom_sf(data=ca_cntys, col="gray", fill=alpha("gray10", 0))+
+  geom_sf(data=lica_ca |> filter(year(ymd(observed_on)) >= 2013, year(ymd(observed_on)) < 2023), col="forestgreen", alpha=0.4, size=0.7, pch=1)+
+  geom_sf(data=hotspots_hist |> filter(gistar > 0,  pvalue < 0.05), aes(colour = gistar, fill = gistar), alpha=0.9) +
+  geom_sf(data=hotspots_hist |> filter(gistar > 0,  pvalue > 0.05),
+          aes( fill = gistar), alpha=0.2, color=alpha("gray40", 0.5)) +
+  scale_fill_stepsn("Bullfrog Obs", colors = MetBrewer::met.brewer("Tam"), limits = c(0, 30), breaks = seq(0, 30, 5)) +
+  scale_color_stepsn("Bullfrog Obs", colors = MetBrewer::met.brewer("Tam"), limits = c(0, 30), breaks = seq(0, 30, 5)) +
+  coord_sf(crs = "+proj=aea +lat_1=25 +lat_2=50 +lon_0=-100") +
+  labs(subtitle = "2013-2023") +
+  theme_void(base_family = "Roboto Condensed") +
+  theme(
+    #plot.background = element_rect(fill = "#868D94", color = NA),
+    plot.caption.position = "plot",
+    plot.caption = element_markdown(size=6, hjust = 1),
+    #axis.text = element_text(size = 2),
+    legend.key.height = unit(2, "lines"),
+    legend.key.width = unit(0.8, "lines"),
+    legend.title = element_text(size=10, color="gray40", family="Roboto Slab"),
+    legend.text = element_text(size = 8, color = "gray40", family = "Roboto Slab")
+  )
+
+#gg_hotspot_hist
+
+# plot
+gg_hotspot_rcnt <- 
+  ggplot(hotspots_rcnt_w |> filter(gistar > 0))+ # pvalue < 0.05)) +
+  geom_sf(data = ca1, fill = "#E5E6E8", color = "#868D94") +
+  geom_sf(data=ca_cntys, col="gray", fill=alpha("gray10", 0))+
+  geom_sf(data=lica_ca |> filter(year(ymd(observed_on)) > 2023), col="forestgreen", alpha=0.7, size=0.7, pch=16)+
+  geom_sf(data=hotspots_rcnt_w |> filter(gistar > 0,  pvalue < 0.05), aes(colour = gistar, fill = gistar), alpha=0.9) +
+  geom_sf(data=hotspots_rcnt_w |> filter(gistar > 0,  pvalue > 0.05),
+          aes( fill = gistar), alpha=0.2, color=alpha("gray40", 0.5)) +
+  scale_fill_stepsn("Bullfrog Obs", colors = MetBrewer::met.brewer("Tam"), limits = c(0, 30), breaks = seq(0, 30, 5)) +
+  scale_color_stepsn("Bullfrog Obs", colors = MetBrewer::met.brewer("Tam"), limits = c(0, 30), breaks = seq(0, 30, 5)) +
+  coord_sf(crs = "+proj=aea +lat_1=25 +lat_2=50 +lon_0=-100") +
+  labs(subtitle = "2023 or later",
+       caption = glue("Data: iNaturalist {{rinat}}, updated Nov 2024")) +
+  theme_void(base_family = "Roboto Condensed") +
+  theme(
+    #plot.background = element_rect(fill = "#868D94", color = NA),
+    plot.caption.position = "plot",
+    plot.caption = element_markdown(size=6, hjust = 1),
+    #axis.text = element_text(size = 2),
+    legend.key.height = unit(2, "lines"),
+    legend.key.width = unit(0.8, "lines"),
+    legend.title = element_text(size=10, color="gray40", family="Roboto Slab"),
+    legend.text = element_text(size = 8, color = "gray40", family = "Roboto Slab")
+  )
+
+#gg_hotspot_rcnt
+
+
+gg_hotspot_hist + gg_hotspot_rcnt + plot_layout(guides='collect')
+ggsave(filename = "figs/day-01-points_bullfrogs.png", width = 11, height = 8, dpi = 300, bg = "white")
+```
+
+
+
